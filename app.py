@@ -438,7 +438,7 @@ with tab_ai:
     st.subheader("AI growth analyst & copilot")
     key = secret("GEMINI_API_KEY")
     model = secret("GEMINI_MODEL", "gemini-3.8-flash")
-    fallbacks = [m.strip() for m in str(secret("GEMINI_FALLBACK_MODELS", "gemini-3.8-flash-lite,gemini-3-flash")).split(",")]
+    fallbacks = [m.strip() for m in str(secret("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.7-flash,gemini-3.6-flash,gemini-3.1-flash-lite")).split(",")]
     st.caption(f"Answers come from tools that query the live database at the snapshot date ({as_of:%d %b %Y}). "
                f"Model: {model}. Proposed tasks and status changes are saved only after you confirm.")
     if "chat" not in st.session_state:

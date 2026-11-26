@@ -357,7 +357,8 @@ def declarations():
     return [types.Tool(function_declarations=out)]
 
 
-TRANSIENT = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "overloaded", "high demand", "timed out", "timeout")
+TRANSIENT = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "overloaded", "high demand", "timed out", "timeout",
+             "504", "DEADLINE_EXCEEDED", "Deadline", "500", "INTERNAL", "502", "Bad Gateway", "Connection")
 
 
 def _generate(client, model, fallbacks, history, config, base, on_step):
@@ -368,10 +369,10 @@ def _generate(client, model, fallbacks, history, config, base, on_step):
     models = [model] + [m for m in (fallbacks or []) if m and m != model]
     last = None
     for m in models:
-        for attempt, wait in enumerate((0, 3, 8)):
+        for attempt, wait in enumerate((0, 4)):
             if wait:
                 if on_step:
-                    on_step(f"{m} is busy, retrying in {wait}s (attempt {attempt + 1}/3)…")
+                    on_step(f"{m} is busy, retrying in {wait}s (attempt {attempt + 1}/2)…")
                 time.sleep(wait)
             try:
                 return client.models.generate_content(model=m, contents=history, config=config), m, config
