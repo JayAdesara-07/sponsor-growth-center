@@ -361,6 +361,7 @@ The selected snapshot date is {as_of.isoformat()} (end of day, IST). Campaigns: 
 
 How to work:
 - Answer ONLY from tool results on the current data. Call tools before stating any number; never use outside or generic knowledge as if it were data.
+- The data can be edited between messages. Re-query tools for EVERY question; never reuse numbers from earlier answers or earlier tool results (they are marked OUTDATED).
 - Use `calculate` for every arithmetic step (totals, ratios, differences, projections). Never do mental math.
 - Say which snapshot date your numbers are for. Mention the tool-derived evidence (e.g. "SC01: 91 brands contacted, 0 confirmed").
 - Separate EVIDENCE (what the data shows) from ASSUMPTION or JUDGEMENT (your interpretation). Label them.
@@ -419,24 +420,50 @@ def _generate(client, model, fallbacks, history, config, base, on_step):
     raise last
 
 
+STALE_NOTE = ("OUTDATED: this result came from an earlier message and the data may have changed since. "
+              "Call the tool again for current figures.")
+
+
+def _expire_old_results(history: list) -> list:
+    """Replace tool results from earlier turns with a stub, so the model cannot reuse stale numbers
+    (and requests stay small/fast). Function-call parts are kept so the conversation stays valid."""
+    from google.genai import types
+    out = []
+    for c in history:
+        parts = c.parts or []
+        if any(getattr(p, "function_response", None) for p in parts):
+            c = types.Content(role=c.role, parts=[
+                types.Part.from_function_response(name=p.function_response.name, response={"result": STALE_NOTE})
+                if getattr(p, "function_response", None) else p for p in parts])
+        out.append(c)
+    return out
+
+
 def run_turn(client, model: str, tools: CopilotTools, history: list, user_text: str, sys_prompt: str,
              max_steps: int = 8, on_step=None, fallback_models: list[str] | None = None):
     """One user turn with a manual function-calling loop.
+    The first step FORCES a tool call (fresh data every turn); later steps let the model decide.
     Returns (answer_text, updated_history, trace) where trace lists tool calls made."""
     from google.genai import types
-    history = list(history) + [types.Content(role="user", parts=[types.Part(text=user_text)])]
-    base = dict(system_instruction=sys_prompt, tools=declarations(), temperature=0.2,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
-    try:  # low thinking keeps answers fast; fall back if a model does not accept it
-        config = types.GenerateContentConfig(**base, thinking_config=types.ThinkingConfig(thinking_level="LOW"))
-    except Exception:  # noqa: BLE001
-        config = types.GenerateContentConfig(**base)
+    history = _expire_old_results(list(history)) + [types.Content(role="user", parts=[types.Part(text=user_text)])]
+    common = dict(system_instruction=sys_prompt, tools=declarations(), temperature=0.2,
+                  automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+    forced = dict(common, tool_config=types.ToolConfig(
+        function_calling_config=types.FunctionCallingConfig(mode="ANY")))
+
+    def make(base):
+        try:  # low thinking keeps answers fast; _generate drops it if a model rejects it
+            return types.GenerateContentConfig(**base, thinking_config=types.ThinkingConfig(thinking_level="LOW"))
+        except Exception:  # noqa: BLE001
+            return types.GenerateContentConfig(**base)
+
     tools.begin_turn()
     trace = []
     for step in range(max_steps):
         if on_step:
             on_step(f"Step {step + 1}: asking the model…")
-        resp, model, config = _generate(client, model, fallback_models, history, config, base, on_step)
+        base = forced if step == 0 else common
+        resp, model, _ = _generate(client, model, fallback_models, history, make(base), base, on_step)
         cand = resp.candidates[0].content if resp.candidates else None
         calls = resp.function_calls or []
         if cand is not None:
