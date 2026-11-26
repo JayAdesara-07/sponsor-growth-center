@@ -76,8 +76,11 @@ APP_TABLES = ["tasks", "campaign_plans", "cash_receipts", "change_log"]
 # ---------------------------------------------------------------------------
 def get_engine(url: str | None = None) -> Engine:
     url = url or os.environ.get("DATABASE_URL") or f"sqlite:///{BASE / 'growth_center.db'}"
-    if url.startswith("postgres://"):  # SQLAlchemy wants postgresql://
-        url = "postgresql://" + url[len("postgres://"):]
+    url = url.strip()
+    # Use the psycopg2 driver (in requirements.txt); SQLAlchemy 2.1 defaults to psycopg v3.
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            url = "postgresql+psycopg2://" + url[len(prefix):]
     return create_engine(url, pool_pre_ping=True)
 
 
