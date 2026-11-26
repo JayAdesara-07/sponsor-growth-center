@@ -1,6 +1,16 @@
 # Sponsor Growth Center: RISA Growth APM assignment (Track B: Sponsorship)
 
 **Author:** Jay · IIT Madras
+
+| | |
+|---|---|
+| **Live app** | https://sponsor-growth-center-xa7xxvxuwcyddcgndtgvct.streamlit.app |
+| **Source code** | https://github.com/JayAdesara-07/sponsor-growth-center |
+| **Demo video** | `04_Demo_Video.mp4` in the submission folder |
+| **Strategy slides** | `01_Strategy_Slides.pdf` in the submission folder |
+
+> If the app shows "This app has gone to sleep", click **Yes, get this app back up**. It wakes in about 30 seconds. The AI copilot uses Google Gemini; if Google is briefly overloaded, the app retries and switches to backup models automatically.
+
 **Deliverables:** 3-slide strategy (PDF) · this working app (dashboard + campaign/task management + embedded AI copilot) · this README
 
 The strategy targets **sponsorship cash collected before Shaastra** (IIT Madras, Chennai). The app is the command centre that would run that plan. It is built and tested on the provided **CampusFest 2025 Sponsor dataset**.
@@ -107,6 +117,7 @@ A **snapshot date** in the sidebar drives everything. Each view shows the state 
   - real companies
 
   The system prompt requires the copilot to say so, flag small samples and never invent figures.
+- **Always fresh data:** each new question starts with a forced tool call, and tool results from earlier messages are expired, so answers reflect edits made mid-conversation.
 - **Follow-ups:** the conversation history, including tool calls, is kept for the session. A "Data used" expander shows every tool call behind each answer.
 
 ## 4. Setup
@@ -142,6 +153,7 @@ Without `DATABASE_URL`, the app uses a local SQLite file, seeded automatically f
 ## 6. Testing done
 
 - **Headless UI run:** a Streamlit AppTest run of every tab, plus a change of snapshot date. No exceptions.
+- **Live copilot (deployed):** verified answers against the computed figures (campaign verdicts, honesty on cash, follow-ups, task creation with confirmation, and updated numbers after a mid-conversation data edit).
 - **Copilot tools:** all 15 tools were run on live data. The function-calling loop was tested with a scripted model, covering multi-tool turns, tool results going back to the model, and proposals awaiting confirmation.
 - **Changed-data test:** a raw history row was edited and a new "lost" version added. Partnerships went from 24 → 23 and value from ₹22.4L → ₹23.2L, and the dashboard and copilot updated together. A snapshot taken before the edit date was unaffected.
 - **Forecast backtest:** on the same data, projections were 20.2 (1 Mar), 27.7 (15 Mar) and 25.5 (5 Apr), against an actual final of 24.
@@ -150,6 +162,6 @@ Without `DATABASE_URL`, the app uses a local SQLite file, seeded automatically f
 
 - **Small, synthetic data:** 24 wins, so rates are indicative. Campaign attribution is observational.
 - **No spend or cash data in the source:** cost per deal and cash collected appear only once entered in the app.
-- **Live copilot not tested in the build environment:** the build environment couldn't reach the Gemini API, so the live model behaviour was verified only after deployment. The tools and loop were tested offline.
+- **Model availability:** the copilot depends on Google Gemini. During demand spikes it retries and falls back to backup models, but a Google-wide outage would pause it (the dashboard keeps working).
 - **Thresholds:** the Scale/Change/Stop thresholds are heuristics taken from this dataset, and they should be re-tuned on real Shaastra data.
 - **No user accounts:** anyone with the link can edit. This is fine for a demo; a production version needs authentication.
