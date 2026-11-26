@@ -314,27 +314,33 @@ with tab_pipe:
     st.markdown("#### Update records")
     a1, a2 = st.columns(2)
     with a1:
-        with st.form("stage_form"):
-            st.markdown("**Move a deal to a new stage**")
-            opts = o.sort_values("brand_name")
-            sel = st.selectbox("Opportunity", opts["opportunity_id"],
-                               format_func=lambda x: f"{opts.set_index('opportunity_id').loc[x, 'opportunity_name']} · "
-                                                     f"{opts.set_index('opportunity_id').loc[x, 'stage']}")
-            cur = opts.set_index("opportunity_id").loc[sel]
-            new_stage = st.selectbox("New stage", sd.STAGE_ORDER + sd.CLOSED_LOST,
-                                     index=(sd.STAGE_ORDER + sd.CLOSED_LOST).index(cur["stage"]))
+        st.markdown("**Move a deal to a new stage**")
+        opts = o.sort_values("brand_name").set_index("opportunity_id")
+        # Deal picker sits OUTSIDE the form so the fields below always match the chosen deal
+        sel = st.selectbox("Opportunity", list(opts.index), key="stage_opp",
+                           format_func=lambda x: f"{opts.loc[x, 'opportunity_name']} · {opts.loc[x, 'stage']}")
+        cur = opts.loc[sel]
+        with st.form(f"stage_form_{sel}"):
+            stages = sd.STAGE_ORDER + sd.CLOSED_LOST
+            new_stage = st.selectbox("New stage", stages, index=stages.index(cur["stage"]), key=f"ns_{sel}")
             val = st.number_input("Proposed value ₹ (becomes confirmed value if partner_confirmed)",
-                                  value=int(cur["proposed_value_inr"]), step=5000, min_value=0)
-            own = st.selectbox("Deal owner", OWNERS, index=OWNERS.index(cur["deal_owner_name"]) if cur["deal_owner_name"] in OWNERS else 0)
+                                  value=int(cur["proposed_value_inr"]), step=5000, min_value=0, key=f"val_{sel}")
+            own = st.selectbox("Deal owner", OWNERS, key=f"own_{sel}",
+                               index=OWNERS.index(cur["deal_owner_name"]) if cur["deal_owner_name"] in OWNERS else 0)
             eff_default = store.suggest_effective_at(data, as_of, "opportunity_id", sel, "opp_history")
-            ed = st.date_input("Effective date", value=eff_default.date())
+            ed = st.date_input("Effective date", value=eff_default.date(), key=f"ed_{sel}")
             if st.form_submit_button("Save stage change"):
-                eff = datetime.combine(ed, eff_default.time()) if ed == eff_default.date() else datetime.combine(ed, time(18))
-                store.set_opportunity_stage(E, data, sel, new_stage, int(val), own, eff)
-                if eff.date() > as_of:
-                    st.info("Saved with a date after the current snapshot: move the snapshot date forward to see it.")
-                st.success("Saved as a new history version.")
-                st.rerun()
+                if new_stage == cur["stage"] and int(val) == int(cur["proposed_value_inr"]):
+                    st.warning("Nothing changed: pick a different stage or value.")
+                else:
+                    eff = datetime.combine(ed, eff_default.time()) if ed == eff_default.date() else datetime.combine(ed, time(18))
+                    store.set_opportunity_stage(E, data, sel, new_stage, int(val), own, eff)
+                    st.session_state["flash"] = (f"Saved: {cur['brand_name']} → {new_stage} (₹{int(val):,}) effective "
+                                                 f"{eff:%d %b %Y}." + (" Move the snapshot date forward to see it."
+                                                                      if eff.date() > as_of else ""))
+                    st.rerun()
+        if st.session_state.get("flash"):
+            st.success(st.session_state.pop("flash"))
     with a2:
         with st.form("cash_form"):
             st.markdown("**Record cash received**")
