@@ -253,12 +253,38 @@ class CopilotTools:
                      opportunity_id: str | None = None):
         if priority not in ("high", "medium", "low"):
             priority = "medium"
+        data = self._data()
+        # Validate against the data so a proposal can never reference things that don't exist
+        if owner and owner not in store.owners(data):
+            return {"error": f"Unknown owner '{owner}'. Valid owners: {store.owners(data)}"}
+        if due_date:
+            try:
+                due_date = pd.to_datetime(due_date).date().isoformat()
+            except Exception:  # noqa: BLE001
+                return {"error": "due_date must be YYYY-MM-DD"}
+        facts = ""
+        if opportunity_id:
+            _, s = self._snap(None)
+            o = s.opportunities.set_index("opportunity_id")
+            if opportunity_id not in o.index:
+                return {"error": f"Unknown opportunity_id '{opportunity_id}'."}
+            r = o.loc[opportunity_id]
+            sponsor_campaign_id = sponsor_campaign_id or r["sponsor_campaign_id"]
+            owner = owner or r["deal_owner_name"]
+            days = (pd.Timestamp(s.cutoff) - r["stage_since"]).days if pd.notna(r["stage_since"]) else None
+            # facts line written by the app from the data, not by the model
+            facts = (f"[Data on {s.cutoff.date()}: {r['brand_name']} · stage {r['stage']}"
+                     + (f" for {days} days" if days is not None else "")
+                     + f" · proposed ₹{int(r['proposed_value_inr']):,} · campaign {r['originating_campaign_name']}]")
+        if sponsor_campaign_id and sponsor_campaign_id not in set(data["campaigns"]["sponsor_campaign_id"]):
+            return {"error": f"Unknown sponsor_campaign_id '{sponsor_campaign_id}'."}
+        description = (facts + " " + (description or "")).strip()
         p = {"proposal_id": uuid.uuid4().hex[:6], "kind": "task",
              "fields": {"title": title[:200], "owner": owner, "due_date": due_date, "priority": priority,
                         "description": description, "sponsor_campaign_id": sponsor_campaign_id,
                         "opportunity_id": opportunity_id}}
         self.pending.append(p)
-        return {"status": "awaiting_user_confirmation", "proposal_id": p["proposal_id"],
+        return {"status": "awaiting_user_confirmation", "proposal_id": p["proposal_id"], "fields": p["fields"],
                 "message": "Shown to the user with Confirm / Discard buttons. Not saved yet."}
 
     def propose_campaign_status(self, sponsor_campaign_id: str, status: str, reason: str):
@@ -340,6 +366,8 @@ How to work:
 - Separate EVIDENCE (what the data shows) from ASSUMPTION or JUDGEMENT (your interpretation). Label them.
 - If the data cannot answer (cash actually collected, spend/ROI, causal impact, real-world companies, anything not in the tools), say so plainly, explain what is missing, and suggest what data would answer it. Call `get_data_coverage` when unsure. Never invent figures.
 - Note small samples (e.g. fewer than ~10 brands or deals) as low confidence.
+- "Biggest" deals means largest proposed value unless the user says otherwise; say which ranking you used.
+- When proposing a task for a deal, pass its opportunity_id (the app attaches the verified stage, value and campaign). Keep your own description short and consistent with the tool data; never restate a stage or number you have not just read from a tool.
 - Recommendations: say what to scale, change or stop, with the numbers behind it, consistent with the campaign recommendations tool.
 - Execution: when an action would help, offer it and call `propose_task` or `propose_campaign_status`. These only create a proposal the user must confirm; say "I've proposed..." not "I've created...".
 - Reported partnership value is not cash received. A positive reply is not qualification; qualification is not a confirmed deal.
