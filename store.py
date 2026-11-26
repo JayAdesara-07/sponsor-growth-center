@@ -136,6 +136,13 @@ def load_source(engine: Engine) -> dict[str, pd.DataFrame]:
     return sd.clean(raw)
 
 
+def data_version(engine: Engine) -> int:
+    """Changes whenever anything is written (every write is logged), so cached reads stay correct."""
+    from sqlalchemy import func
+    with engine.connect() as c:
+        return int(c.execute(select(func.max(log_t.c.log_id))).scalar() or 0)
+
+
 def load_raw_table(engine: Engine, name: str) -> pd.DataFrame:
     return pd.read_sql_table(name, engine)
 

@@ -60,7 +60,20 @@ def style_fig(fig, height=320):
 
 
 E = engine()
-data = store.load_source(E)
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def cached_source(version: int):
+    return store.load_source(engine())
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def cached_app_table(name: str, version: int):
+    return store.load_app_table(engine(), name)
+
+
+VERSION = store.data_version(E)
+data = cached_source(VERSION)
 end_day = store.data_end(data, E)
 start_day = data["event"]["history_start"].iloc[0].date()
 event_start = data["event"]["event_starts_at"].iloc[0]
@@ -84,14 +97,15 @@ with st.sidebar:
         if st.checkbox("I understand this discards my changes"):
             if st.button("Reset to original data", type="primary"):
                 store.seed(E, reset=True)
+                st.cache_data.clear()
                 st.session_state.pop("chat", None)
                 st.rerun()
 
 H = sd.headline(S)
 F = sd.weighted_forecast(S, event_start)
-receipts = store.load_app_table(E, "cash_receipts")
-plans = store.load_app_table(E, "campaign_plans")
-tasks = store.load_app_table(E, "tasks")
+receipts = cached_app_table("cash_receipts", VERSION)
+plans = cached_app_table("campaign_plans", VERSION)
+tasks = cached_app_table("tasks", VERSION)
 CASH = ins.cash_summary(S, receipts)
 REC = ins.recommendations(S)
 CT = sd.campaign_table(S)
@@ -423,7 +437,8 @@ with tab_tasks:
 with tab_ai:
     st.subheader("AI growth analyst & copilot")
     key = secret("GEMINI_API_KEY")
-    model = secret("GEMINI_MODEL", "gemini-2.5-flash")
+    model = secret("GEMINI_MODEL", "gemini-3.8-flash")
+    fallbacks = [m.strip() for m in str(secret("GEMINI_FALLBACK_MODELS", "gemini-3.8-flash-lite,gemini-3-flash")).split(",")]
     st.caption(f"Answers come from tools that query the live database at the snapshot date ({as_of:%d %b %Y}). "
                f"Model: {model}. Proposed tasks and status changes are saved only after you confirm.")
     if "chat" not in st.session_state:
@@ -431,6 +446,8 @@ with tab_ai:
     chat = st.session_state.chat
     tools = chat["tools"]
     tools.engine, tools.default_as_of = E, as_of
+    tools.loader = lambda: cached_source(store.data_version(E))
+    tools.app_loader = lambda name: cached_app_table(name, store.data_version(E))
 
     if not key:
         st.error("No GEMINI_API_KEY configured. Add it to Streamlit secrets to enable the copilot.")
@@ -480,13 +497,19 @@ with tab_ai:
         chat["messages"].append({"role": "user", "content": prompt})
         try:
             from google import genai
-            client = genai.Client(api_key=key)
+            from google.genai import types as gtypes
+            client = genai.Client(api_key=key, http_options=gtypes.HttpOptions(timeout=90_000))
             sys_p = cp.system_prompt(as_of, OWNERS, data["campaigns"])
-            with st.spinner("Analysing the data…"):
-                answer, chat["history"], trace = cp.run_turn(client, model, tools, chat["history"], prompt, sys_p)
+            with st.status("Analysing the data…", expanded=True) as status:
+                answer, chat["history"], trace = cp.run_turn(client, model, tools, chat["history"], prompt, sys_p,
+                                                             on_step=status.write, fallback_models=fallbacks)
+                status.update(label=f"Done: {len(trace)} data look-ups", state="complete", expanded=False)
             chat["messages"].append({"role": "assistant", "content": answer, "trace": trace})
         except Exception as e:  # noqa: BLE001
-            chat["messages"].append({"role": "assistant", "content": f"⚠️ The AI service failed: {type(e).__name__}: {e}"})
+            busy = any(t.lower() in str(e).lower() for t in cp.TRANSIENT)
+            hint = (" Google's model is overloaded right now (temporary). Please try again in a minute."
+                    if busy else "")
+            chat["messages"].append({"role": "assistant", "content": f"⚠️ The AI service failed: {type(e).__name__}: {str(e)[:300]}.{hint}"})
         st.rerun()
     if chat["messages"] and st.button("Clear conversation"):
         st.session_state.pop("chat")

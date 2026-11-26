@@ -99,6 +99,7 @@ A **snapshot date** in the sidebar drives everything. Each view shows the state 
 - **Reliable calculations:** a `calculate` tool evaluates arithmetic exactly with a safe AST evaluator, so the model doesn't do mental math.
 - **Diagnosis and recommendations:** it uses the same Scale/Change/Stop rules as the dashboard, and is told to label what is evidence and what is judgement.
 - **Execution with confirmation:** `propose_task` and `propose_campaign_status` create proposals. They show up as Confirm/Discard cards, and nothing is saved until the user confirms.
+- **Resilience:** busy-model errors (503/429/timeouts) are retried with backoff, then the copilot falls back to backup models (`GEMINI_FALLBACK_MODELS`). Each request has a 90-second timeout, and live step-by-step progress is shown.
 - **Uncertainty:** `get_data_coverage` lists what the data cannot answer:
   - cash received
   - spend and ROI
@@ -126,7 +127,7 @@ Without `DATABASE_URL`, the app uses a local SQLite file, seeded automatically f
 4. Under **Advanced settings → Secrets**, paste:
    ```toml
    GEMINI_API_KEY = "..."
-   GEMINI_MODEL = "gemini-2.5-flash"
+   GEMINI_MODEL = "gemini-3.8-flash"
    DATABASE_URL = "postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres"
    ```
 5. Deploy. On first load, the app creates the tables in Supabase and seeds them with the original data.
@@ -134,7 +135,7 @@ Without `DATABASE_URL`, the app uses a local SQLite file, seeded automatically f
 ## 5. Tools used
 
 - **Languages and libraries:** Python 3.12, pandas, Streamlit, Plotly, SQLAlchemy.
-- **Database and AI:** Supabase Postgres (free tier) and Google Gemini 2.5 Flash via the `google-genai` SDK (free tier from Google AI Studio).
+- **Database and AI:** Supabase Postgres (free tier) and Google Gemini 3.8 Flash via the `google-genai` SDK (free tier from Google AI Studio).
 - **Build assistance:** the app was built with help from an AI coding assistant (Claude). All metrics were **independently re-computed** from the raw sheets and matched. Examples: 17 confirmed / ₹15.05L / 55 qualified on 15 Mar; 24 / ₹22.4L / 60 at the end.
 - **Reuse:** no templates were reused.
 

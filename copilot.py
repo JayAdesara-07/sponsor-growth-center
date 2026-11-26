@@ -82,14 +82,24 @@ def safe_eval(expr: str) -> float:
 class CopilotTools:
     """All tools read the database fresh on every call, so answers reflect edits immediately."""
 
-    def __init__(self, engine, default_as_of: date):
+    def __init__(self, engine, default_as_of: date, loader=None, app_loader=None):
         self.engine = engine
         self.default_as_of = default_as_of
         self.pending: list[dict] = []     # proposals awaiting user confirmation
+        # loaders can be swapped for cached versions by the UI
+        self.loader = loader or (lambda: store.load_source(self.engine))
+        self.app_loader = app_loader or (lambda name: store.load_app_table(self.engine, name))
+        self._memo = None
+
+    def begin_turn(self):
+        """Read the database once per user turn (fresh data, but not 10 reloads per answer)."""
+        self._memo = None
 
     # helpers
     def _data(self):
-        return store.load_source(self.engine)
+        if self._memo is None:
+            self._memo = self.loader()
+        return self._memo
 
     def _snap(self, as_of: str | None):
         data = self._data()
@@ -106,7 +116,7 @@ class CopilotTools:
         f = sd.weighted_forecast(s, self._event_start(data))
         f.pop("by_opportunity")
         h = sd.headline(s)
-        h["cash_collected_inr"] = ins.cash_summary(s, store.load_app_table(self.engine, "cash_receipts"))
+        h["cash_collected_inr"] = ins.cash_summary(s, self.app_loader("cash_receipts"))
         return {"headline": h, "forecast": f,
                 "event": {"starts_at": self._event_start(data), "ends_at": data["event"]["event_ends_at"].iloc[0]},
                 "targets_history": data["targets"]}
@@ -120,7 +130,7 @@ class CopilotTools:
     def get_campaign_performance(self, as_of: str | None = None):
         _, s = self._snap(as_of)
         ct = sd.campaign_table(s)
-        plans = store.load_app_table(self.engine, "campaign_plans")
+        plans = self.app_loader("campaign_plans")
         return {"as_of": s.cutoff.date(), "campaigns": ct,
                 "recommendations": ins.recommendations(s), "rules": ins.RULES,
                 "plans_and_spend": ins.spend_summary(plans, ct),
@@ -203,7 +213,7 @@ class CopilotTools:
         return {"found": True, "as_of": cutoff.date(), "brands": out}
 
     def get_tasks(self, status: str | None = None, owner: str | None = None):
-        t = store.load_app_table(self.engine, "tasks")
+        t = self.app_loader("tasks")
         if status:
             t = t[t["status"] == status]
         if owner:
@@ -212,8 +222,8 @@ class CopilotTools:
 
     def get_data_coverage(self):
         data = self._data()
-        cr = store.load_app_table(self.engine, "cash_receipts")
-        plans = store.load_app_table(self.engine, "campaign_plans")
+        cr = self.app_loader("cash_receipts")
+        plans = self.app_loader("campaign_plans")
         return {
             "event": data["event"].iloc[0], "record_counts": {k: len(v) for k, v in data.items()},
             "cash_receipts_recorded": int(len(cr)),
@@ -347,17 +357,57 @@ def declarations():
     return [types.Tool(function_declarations=out)]
 
 
+TRANSIENT = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "overloaded", "high demand", "timed out", "timeout")
+
+
+def _generate(client, model, fallbacks, history, config, base, on_step):
+    """Call Gemini with retries on overload (503/429/timeouts) and fall back to backup models.
+    Returns (response, model_used, config_used)."""
+    import time
+    from google.genai import types
+    models = [model] + [m for m in (fallbacks or []) if m and m != model]
+    last = None
+    for m in models:
+        for attempt, wait in enumerate((0, 3, 8)):
+            if wait:
+                if on_step:
+                    on_step(f"{m} is busy, retrying in {wait}s (attempt {attempt + 1}/3)…")
+                time.sleep(wait)
+            try:
+                return client.models.generate_content(model=m, contents=history, config=config), m, config
+            except Exception as e:  # noqa: BLE001
+                last = e
+                msg = str(e)
+                if "thinking" in msg.lower() and getattr(config, "thinking_config", None) is not None:
+                    config = types.GenerateContentConfig(**base)   # model rejects thinking level: drop it
+                    continue
+                if "404" in msg or "NOT_FOUND" in msg:
+                    break                                           # model unavailable: try next model
+                if not any(t.lower() in msg.lower() for t in TRANSIENT):
+                    raise                                           # real error (bad key etc.): surface it
+        if on_step and m != models[-1]:
+            on_step(f"Switching to backup model {models[models.index(m) + 1]}…")
+    raise last
+
+
 def run_turn(client, model: str, tools: CopilotTools, history: list, user_text: str, sys_prompt: str,
-             max_steps: int = 8):
+             max_steps: int = 8, on_step=None, fallback_models: list[str] | None = None):
     """One user turn with a manual function-calling loop.
     Returns (answer_text, updated_history, trace) where trace lists tool calls made."""
     from google.genai import types
     history = list(history) + [types.Content(role="user", parts=[types.Part(text=user_text)])]
-    config = types.GenerateContentConfig(system_instruction=sys_prompt, tools=declarations(), temperature=0.2,
-                                         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+    base = dict(system_instruction=sys_prompt, tools=declarations(), temperature=0.2,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+    try:  # low thinking keeps answers fast; fall back if a model does not accept it
+        config = types.GenerateContentConfig(**base, thinking_config=types.ThinkingConfig(thinking_level="LOW"))
+    except Exception:  # noqa: BLE001
+        config = types.GenerateContentConfig(**base)
+    tools.begin_turn()
     trace = []
-    for _ in range(max_steps):
-        resp = client.models.generate_content(model=model, contents=history, config=config)
+    for step in range(max_steps):
+        if on_step:
+            on_step(f"Step {step + 1}: asking the model…")
+        resp, model, config = _generate(client, model, fallback_models, history, config, base, on_step)
         cand = resp.candidates[0].content if resp.candidates else None
         calls = resp.function_calls or []
         if cand is not None:
@@ -367,6 +417,8 @@ def run_turn(client, model: str, tools: CopilotTools, history: list, user_text: 
         parts = []
         for fc in calls:
             args = dict(fc.args or {})
+            if on_step:
+                on_step(f"Running {fc.name}({', '.join(f'{k}={v}' for k, v in args.items())})")
             fn = getattr(tools, fc.name, None)
             try:
                 result = fn(**args) if fn and fc.name in {t[0] for t in TOOL_SPECS} else {"error": f"unknown tool {fc.name}"}
